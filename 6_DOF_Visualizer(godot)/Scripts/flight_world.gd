@@ -6,6 +6,8 @@ const RocketVisualScript = preload("res://Scripts/rocket_visual.gd")
 const AttitudeTransform = preload("res://Scripts/attitude_transform.gd")
 const ROCKET_SCENE = preload("res://Prefabs/Rocket.tscn")
 const ROCKET_GROUND_OFFSET := 2.14
+const LANDING_CAMERA_LOCAL_OFFSET := Vector3(0.0, -0.92, 0.0)
+const LANDING_CAMERA_LOCAL_BASIS := Basis(Vector3.RIGHT, Vector3.FORWARD, Vector3.UP)
 
 var rocket: Node3D
 var rocket_visual: Node3D
@@ -13,14 +15,23 @@ var camera: Camera3D
 var trace_mesh := ImmediateMesh.new()
 var reference_mesh := ImmediateMesh.new()
 var projection_mesh := ImmediateMesh.new()
+var ground_position_marker: MeshInstance3D
+var landing_ellipse: MeshInstance3D
+var landing_target: MeshInstance3D
+var monte_carlo_cloud: MultiMeshInstance3D
+var covariance_ellipsoid: MeshInstance3D
 var camera_mode := 0
 var camera_azimuth := 35.0
 var camera_elevation := 18.0
+var _smoothed_look_target := Vector3.ZERO
+var _smoothed_camera_up := Vector3.UP
+var _camera_initialized := false
 
 func _ready() -> void:
 	_build_environment()
 	_build_ground_and_rocket()
 	_build_trajectory_guides()
+	_build_cloud_layer()
 	camera = Camera3D.new()
 	camera.fov = 62.0
 	add_child(camera)
@@ -31,7 +42,7 @@ func _build_environment() -> void:
 	settings.background_mode = Environment.BG_SKY
 	var sky := Sky.new()
 	var panorama := PanoramaSkyMaterial.new()
-	panorama.panorama = load("res://grasslands_sunset_4k.hdr")
+	panorama.panorama = load("res://Assets/Skies/cartoon_cloud_sky.png")
 	sky.sky_material = panorama
 	settings.sky = sky
 	settings.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
@@ -59,18 +70,42 @@ func _build_ground_and_rocket() -> void:
 	rocket_visual = RocketVisualScript.new()
 	rocket.add_child(rocket_visual)
 
+func _build_cloud_layer() -> void:
+	var cloud_layer := Node3D.new()
+	cloud_layer.name = "CloudLayer100m"
+	cloud_layer.position.y = 100.0
+	add_child(cloud_layer)
+	var puff_mesh := SphereMesh.new()
+	puff_mesh.radius = 1.0
+	puff_mesh.height = 2.0
+	var cloud_material := _material(Color("f7fbff"), true, 0.18)
+	cloud_material.cull_mode = BaseMaterial3D.CULL_DISABLED
+	cloud_material.emission_enabled = true
+	cloud_material.emission = Color("d8eeff")
+	cloud_material.emission_energy_multiplier = 0.35
+	for i in 48:
+		var puff := MeshInstance3D.new()
+		puff.mesh = puff_mesh
+		puff.material_override = cloud_material
+		var angle := float(i) * 2.39996
+		var radius := 15.0 + sqrt(float(i)) * 18.0
+		puff.position = Vector3(cos(angle) * radius, sin(float(i) * 1.7) * 0.35, sin(angle) * radius)
+		var stretch := 4.5 + fmod(float(i) * 1.73, 3.5)
+		puff.scale = Vector3(stretch, 0.16 + fmod(float(i), 3.0) * 0.025, stretch * 0.65)
+		cloud_layer.add_child(puff)
+
 func _build_trajectory_guides() -> void:
 	_add_line_mesh(trace_mesh, Color("58d6ff"))
 	_add_line_mesh(reference_mesh, Color("ffcf5c"))
-	_add_line_mesh(projection_mesh, Color("5fc7ff80"))
+	_add_line_mesh(projection_mesh, Color("ff334f"))
 	var ellipse := ImmediateMesh.new()
-	_add_line_mesh(ellipse, Color("f2b84b"))
+	landing_ellipse = _add_line_mesh(ellipse, Color("f2b84b"))
 	ellipse.surface_begin(Mesh.PRIMITIVE_LINE_STRIP)
 	for i in 65:
 		var angle := TAU * float(i) / 64.0
 		ellipse.surface_add_vertex(Vector3(cos(angle) * 14.0, 0.03, sin(angle) * 8.0))
 	ellipse.surface_end()
-	var landing_target := MeshInstance3D.new()
+	landing_target = MeshInstance3D.new()
 	var target_mesh := CylinderMesh.new()
 	target_mesh.top_radius = 0.45
 	target_mesh.bottom_radius = 0.45
@@ -79,10 +114,22 @@ func _build_trajectory_guides() -> void:
 	landing_target.position = Vector3(0, 0.05, 0)
 	landing_target.material_override = _material(Color("ff4f64"), true)
 	add_child(landing_target)
+	ground_position_marker = MeshInstance3D.new()
+	var marker_mesh := SphereMesh.new()
+	marker_mesh.radius = 0.13
+	marker_mesh.height = 0.26
+	ground_position_marker.mesh = marker_mesh
+	ground_position_marker.position.y = 0.14
+	ground_position_marker.material_override = _material(Color("ff334f"), true)
+	var marker_material := ground_position_marker.material_override as StandardMaterial3D
+	marker_material.emission_enabled = true
+	marker_material.emission = Color("ff334f")
+	marker_material.emission_energy_multiplier = 2.5
+	add_child(ground_position_marker)
 	_build_uncertainty_visuals()
 
 func _build_uncertainty_visuals() -> void:
-	var cloud := MultiMeshInstance3D.new()
+	monte_carlo_cloud = MultiMeshInstance3D.new()
 	var multi_mesh := MultiMesh.new()
 	multi_mesh.transform_format = MultiMesh.TRANSFORM_3D
 	multi_mesh.instance_count = 60
@@ -94,33 +141,37 @@ func _build_uncertainty_visuals() -> void:
 		var angle := float(i) * 2.4
 		var radius := 0.12 * sqrt(float(i))
 		multi_mesh.set_instance_transform(i, Transform3D(Basis(), Vector3(cos(angle) * radius, 0.08, sin(angle) * radius)))
-	cloud.multimesh = multi_mesh
-	cloud.material_override = _material(Color("bd8cff"), true)
-	cloud.name = "TrajectoryCloud"
-	add_child(cloud)
-	var covariance := MeshInstance3D.new()
+	monte_carlo_cloud.multimesh = multi_mesh
+	monte_carlo_cloud.material_override = _material(Color("bd8cff"), true)
+	add_child(monte_carlo_cloud)
+	covariance_ellipsoid = MeshInstance3D.new()
 	var ellipsoid := SphereMesh.new()
 	ellipsoid.radius = 1.0
 	ellipsoid.height = 2.0
-	covariance.mesh = ellipsoid
-	covariance.scale = Vector3(2.4, 0.35, 1.4)
-	covariance.position = Vector3(0, 0.35, 0)
-	covariance.material_override = _material(Color("a88cff"), true, 0.18)
-	add_child(covariance)
+	covariance_ellipsoid.mesh = ellipsoid
+	covariance_ellipsoid.scale = Vector3(2.4, 0.35, 1.4)
+	covariance_ellipsoid.position = Vector3(0, 0.35, 0)
+	covariance_ellipsoid.material_override = _material(Color("a88cff"), true, 0.18)
+	add_child(covariance_ellipsoid)
 
-func set_cloud_visible(visible: bool) -> void:
-	get_node("TrajectoryCloud").visible = visible
+func set_landing_ellipse_visible(visible: bool) -> void:
+	landing_ellipse.visible = visible
+	landing_target.visible = visible
+
+func set_monte_carlo_visible(visible: bool) -> void:
+	monte_carlo_cloud.visible = visible
+	covariance_ellipsoid.visible = visible
 
 func set_trace(rows: Array[PackedFloat64Array]) -> void:
 	trace_mesh.clear_surfaces()
 	projection_mesh.clear_surfaces()
 	if rows.size() < 2:
 		return
-	trace_mesh.surface_begin(Mesh.PRIMITIVE_LINE_STRIP)
+	trace_mesh.surface_begin(Mesh.PRIMITIVE_TRIANGLES)
 	projection_mesh.surface_begin(Mesh.PRIMITIVE_LINE_STRIP)
-	for index in rows.size():
-		var row := rows[index]
-		trace_mesh.surface_add_vertex(telemetry_to_world(row))
+	for index in range(1, rows.size()):
+		_append_thin_ribbon_segment(trace_mesh, telemetry_to_world(rows[index - 1]), telemetry_to_world(rows[index]))
+	for row in rows:
 		projection_mesh.surface_add_vertex(Vector3(row[TelemetrySchema.Column.EAST], 0.035, -row[TelemetrySchema.Column.NORTH]))
 	trace_mesh.surface_end()
 	projection_mesh.surface_end()
@@ -139,7 +190,10 @@ func apply_sample(_index: int, row: PackedFloat64Array, initial_fuel: float, ini
 	rocket.basis = AttitudeTransform.matlab_body_to_ned(
 		row[TelemetrySchema.Column.Q0], row[TelemetrySchema.Column.Q1], row[TelemetrySchema.Column.Q2], row[TelemetrySchema.Column.Q3]
 	).scaled(Vector3.ONE * 2.0)
+	ground_position_marker.position = Vector3(rocket.position.x, 0.14, rocket.position.z)
 	rocket_visual.update_telemetry(row, initial_fuel, initial_ox)
+	if camera_mode == 2:
+		_snap_landing_camera()
 
 func set_vector_enabled(kind: String, enabled: bool) -> void:
 	rocket_visual.set_vector_enabled(kind, enabled)
@@ -151,8 +205,15 @@ func orbit(relative_motion: Vector2) -> void:
 
 func set_camera_mode(mode: int) -> void:
 	camera_mode = mode
+	if mode == 2:
+		_snap_landing_camera()
+	else:
+		_camera_initialized = false
 
 func update_camera(delta: float) -> void:
+	if camera_mode == 2:
+		_snap_landing_camera()
+		return
 	var target := rocket.global_position
 	var desired := target + Vector3(8, 4, 10)
 	var look_target := target
@@ -161,29 +222,58 @@ func update_camera(delta: float) -> void:
 		var azimuth := deg_to_rad(camera_azimuth)
 		var elevation := deg_to_rad(camera_elevation)
 		desired = target + Vector3(cos(azimuth) * cos(elevation), sin(elevation), sin(azimuth) * cos(elevation)) * 15.0
-	elif camera_mode == 2:
-		desired = rocket.to_global(Vector3(0, -1.55, 0))
-		desired.y = maxf(desired.y, 0.20)
-		look_target = Vector3(target.x, 0.03, target.z)
-		camera_up = rocket.global_transform.basis.z.normalized()
-	camera.global_position = camera.global_position.lerp(desired, 1.0 - exp(-4.5 * delta))
-	var direction := (look_target - camera.global_position).normalized()
-	if absf(camera_up.dot(direction)) > 0.95:
-		camera_up = Vector3.FORWARD
-	camera.look_at(look_target, camera_up)
+	var smoothing := 1.0 - exp(-4.5 * delta)
+	if not _camera_initialized:
+		camera.global_position = desired
+		_smoothed_look_target = look_target
+		_smoothed_camera_up = camera_up
+		_camera_initialized = true
+	else:
+		camera.global_position = camera.global_position.lerp(desired, smoothing)
+		_smoothed_look_target = _smoothed_look_target.lerp(look_target, smoothing)
+		_smoothed_camera_up = _smoothed_camera_up.lerp(camera_up, smoothing).normalized()
+	var direction := (_smoothed_look_target - camera.global_position).normalized()
+	if absf(_smoothed_camera_up.dot(direction)) > 0.95:
+		_smoothed_camera_up = Vector3.FORWARD
+	camera.look_at(_smoothed_look_target, _smoothed_camera_up)
+
+func _snap_landing_camera() -> void:
+	if camera == null:
+		return
+	# This view is rigidly mounted near the engine: no world-space clamp or smoothing.
+	var mounted_transform := rocket.global_transform * Transform3D(LANDING_CAMERA_LOCAL_BASIS, LANDING_CAMERA_LOCAL_OFFSET)
+	camera.global_transform = mounted_transform.orthonormalized()
+	_camera_initialized = false
 
 func telemetry_to_world(row: PackedFloat64Array) -> Vector3:
 	return Vector3(row[TelemetrySchema.Column.EAST], maxf(row[TelemetrySchema.Column.UP], 0.0) + ROCKET_GROUND_OFFSET, -row[TelemetrySchema.Column.NORTH])
 
-func _add_line_mesh(mesh: ImmediateMesh, color: Color) -> void:
+func _append_thin_ribbon_segment(mesh: ImmediateMesh, start: Vector3, finish: Vector3) -> void:
+	var direction := finish - start
+	if direction.length_squared() < 0.000001:
+		return
+	var side := direction.cross(Vector3.UP)
+	if side.length_squared() < 0.000001:
+		side = Vector3.RIGHT
+	side = side.normalized() * 0.018
+	mesh.surface_add_vertex(start - side)
+	mesh.surface_add_vertex(start + side)
+	mesh.surface_add_vertex(finish + side)
+	mesh.surface_add_vertex(start - side)
+	mesh.surface_add_vertex(finish + side)
+	mesh.surface_add_vertex(finish - side)
+
+func _add_line_mesh(mesh: ImmediateMesh, color: Color) -> MeshInstance3D:
 	var line := MeshInstance3D.new()
 	line.mesh = mesh
 	var material := _material(color, true)
 	material.emission_enabled = true
 	material.emission = color
 	material.emission_energy_multiplier = 1.2
+	material.cull_mode = BaseMaterial3D.CULL_DISABLED
 	line.material_override = material
 	add_child(line)
+	return line
 
 func _material(color: Color, unshaded: bool = false, alpha: float = 1.0) -> StandardMaterial3D:
 	var material := StandardMaterial3D.new()

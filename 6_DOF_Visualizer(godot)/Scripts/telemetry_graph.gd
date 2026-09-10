@@ -4,6 +4,7 @@ extends Control
 const TelemetrySchema = preload("res://Scripts/telemetry_schema.gd")
 
 signal pop_out_requested(graph: Control)
+signal expanded_changed(graph: Control, expanded: bool)
 
 var database: Node
 var column := TelemetrySchema.Column.UP
@@ -11,6 +12,7 @@ var cursor := 0
 var title := "Altitude"
 var line_color := Color("58d6ff")
 var hover_index := -1
+var show_expand_toggle := true
 var _expanded := true
 var _expand_toggle: CheckButton
 var _open_button: Button
@@ -18,12 +20,13 @@ var _open_button: Button
 func _ready() -> void:
 	custom_minimum_size = Vector2(280, 150)
 	mouse_filter = Control.MOUSE_FILTER_STOP
-	_expand_toggle = CheckButton.new()
-	_expand_toggle.text = "Expanded"
-	_expand_toggle.button_pressed = true
-	_expand_toggle.position = Vector2(185, 3)
-	_expand_toggle.toggled.connect(_set_expanded)
-	add_child(_expand_toggle)
+	if show_expand_toggle:
+		_expand_toggle = CheckButton.new()
+		_expand_toggle.text = "Expanded"
+		_expand_toggle.button_pressed = true
+		_expand_toggle.position = Vector2(185, 3)
+		_expand_toggle.toggled.connect(_set_expanded)
+		add_child(_expand_toggle)
 	_open_button = Button.new()
 	_open_button.text = "Open"
 	_open_button.position = Vector2(292, 3)
@@ -39,15 +42,17 @@ func set_card_width(width: float) -> void:
 	custom_minimum_size.x = maxf(width, 280.0)
 
 func _place_header_controls() -> void:
-	if _open_button == null or _expand_toggle == null:
+	if _open_button == null:
 		return
 	_open_button.position.x = maxf(size.x - _open_button.size.x - 8.0, 215.0)
-	_expand_toggle.position.x = maxf(_open_button.position.x - _expand_toggle.size.x - 8.0, 115.0)
+	if _expand_toggle != null:
+		_expand_toggle.position.x = maxf(_open_button.position.x - _expand_toggle.size.x - 8.0, 115.0)
 
 func _set_expanded(expanded: bool) -> void:
 	_expanded = expanded
 	custom_minimum_size.y = 150.0 if expanded else 32.0
 	_expand_toggle.text = "Expanded" if expanded else "Collapsed"
+	expanded_changed.emit(self, expanded)
 	queue_redraw()
 
 func _gui_input(event: InputEvent) -> void:
@@ -69,7 +74,10 @@ func _clear_hover() -> void:
 func _draw() -> void:
 	var rect := Rect2(Vector2.ZERO, size).grow(-3.0)
 	draw_style_box(_panel_style(), rect)
-	draw_string(ThemeDB.fallback_font, Vector2(9, 20), title, HORIZONTAL_ALIGNMENT_LEFT, maxf(_expand_toggle.position.x - 16.0, 100.0), 14, Color.WHITE)
+	var title_width := _open_button.position.x - 16.0 if _open_button != null else size.x - 16.0
+	if _expand_toggle != null:
+		title_width = _expand_toggle.position.x - 16.0
+	draw_string(ThemeDB.fallback_font, Vector2(9, 20), title, HORIZONTAL_ALIGNMENT_LEFT, maxf(title_width, 100.0), 14, Color.WHITE)
 	if not _expanded:
 		return
 	if database == null or database.rows.size() < 2:
@@ -89,13 +97,23 @@ func _draw() -> void:
 		draw_polyline(points, line_color, 1.8, true)
 	var current_x := _point_for(cursor, plot, limits, span).x
 	draw_line(Vector2(current_x, plot.position.y), Vector2(current_x, plot.end.y), Color("ffd166"), 1.0)
+	draw_line(Vector2(plot.position.x, plot.end.y), Vector2(plot.end.x, plot.end.y), Color("355166"), 1.0)
 	draw_string(ThemeDB.fallback_font, plot.position + Vector2(2, 13), "%.2f" % limits.y, HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color("9eb2c1"))
 	draw_string(ThemeDB.fallback_font, plot.position + Vector2(2, plot.size.y), "%.2f" % limits.x, HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color("9eb2c1"))
+	_draw_time_axis(plot)
 	if hover_index >= 0:
 		_draw_hover(plot, limits, span)
 
 func _plot_rect() -> Rect2:
-	return Rect2(Vector2(9, 36), Vector2(maxf(size.x - 18.0, 1.0), maxf(size.y - 47.0, 1.0)))
+	return Rect2(Vector2(9, 36), Vector2(maxf(size.x - 18.0, 1.0), maxf(size.y - 56.0, 1.0)))
+
+func _draw_time_axis(plot: Rect2) -> void:
+	var start_time := "%.2f s" % database.rows[0][TelemetrySchema.Column.TIME]
+	var end_time := "%.2f s" % database.rows[-1][TelemetrySchema.Column.TIME]
+	var style := Color("9eb2c1")
+	draw_string(ThemeDB.fallback_font, Vector2(plot.position.x, plot.end.y + 14.0), start_time, HORIZONTAL_ALIGNMENT_LEFT, -1, 10, style)
+	var end_width := ThemeDB.fallback_font.get_string_size(end_time, HORIZONTAL_ALIGNMENT_LEFT, -1, 10).x
+	draw_string(ThemeDB.fallback_font, Vector2(plot.end.x - end_width, plot.end.y + 14.0), end_time, HORIZONTAL_ALIGNMENT_LEFT, -1, 10, style)
 
 func _point_for(index: int, plot: Rect2, limits: Vector2, span: float) -> Vector2:
 	var safe_index := clampi(index, 0, database.rows.size() - 1)

@@ -32,7 +32,7 @@ The canonical input is the 18-column output produced by `simToCSV.m`:
 | 4 | `thrust` | Force magnitude, N |
 | 5–8 | `q0`, `q1`, `q2`, `q3` | MATLAB quaternion, scalar first |
 | 9–10 | `fuel_mass`, `ox_mass` | Propellant mass, kg |
-| 11 | `control` | Normalized TVC/RCS control proxy |
+| 11 | `control` | Normalized TVC command proxy |
 | 12–14 | `cg_x`, `cg_y`, `cg_z` | Body-frame CG, m |
 | 15–17 | `vn`, `ve`, `vd` | NED velocity, m/s |
 

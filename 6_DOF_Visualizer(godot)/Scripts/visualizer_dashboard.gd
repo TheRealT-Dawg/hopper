@@ -9,9 +9,11 @@ signal settings_requested
 signal playback_step_requested(amount: int)
 signal playback_toggle_requested
 signal speed_requested(multiplier: float)
+signal loop_enabled_requested(enabled: bool)
 signal scrub_requested(index: float)
 signal camera_mode_requested(mode: int)
-signal cloud_toggle_requested
+signal landing_ellipse_toggle_requested(visible: bool)
+signal monte_carlo_toggle_requested(visible: bool)
 signal vector_toggle_requested(kind: String, enabled: bool)
 signal orbit_requested(relative_motion: Vector2)
 
@@ -28,8 +30,10 @@ var telemetry_panel: PanelContainer
 var playback_panel: PanelContainer
 var view_panel: PanelContainer
 var force_panel: PanelContainer
+var trajectory_panel: PanelContainer
 var graphs_panel: PanelContainer
 var graph_list: VBoxContainer
+var collapsed_graph_list: VBoxContainer
 var file_dialog: FileDialog
 var _file_action := "telemetry"
 
@@ -48,7 +52,7 @@ func update_readout(row: PackedFloat64Array, index: int, initial_fuel: float, in
 	var mass := row[TelemetrySchema.Column.FUEL_MASS] + row[TelemetrySchema.Column.OX_MASS]
 	var twr := row[TelemetrySchema.Column.THRUST] / maxf(mass * 9.80665, 1.0)
 	var saturation := "SATURATING" if absf(row[TelemetrySchema.Column.CONTROL]) > 0.95 else "tracking"
-	hud.text = "TELEMETRY  %s\nt = %.2f s   sample %d / %d\nAltitude %.1f m   speed %.1f m/s\nThrust %.0f N   mass %.1f kg   TWR %.2f\nTVC / RCS %+.2f  %s" % [database.source_label, row[TelemetrySchema.Column.TIME], index + 1, database.rows.size(), row[TelemetrySchema.Column.UP], velocity, row[TelemetrySchema.Column.THRUST], mass, twr, row[TelemetrySchema.Column.CONTROL], saturation]
+	hud.text = "TELEMETRY  %s\nt = %.2f s   sample %d / %d\nAltitude %.1f m   speed %.1f m/s\nThrust %.0f N   mass %.1f kg   TWR %.2f\nTVC command %+.2f  %s" % [database.source_label, row[TelemetrySchema.Column.TIME], index + 1, database.rows.size(), row[TelemetrySchema.Column.UP], velocity, row[TelemetrySchema.Column.THRUST], mass, twr, row[TelemetrySchema.Column.CONTROL], saturation]
 	for graph in graph_widgets + popup_graph_widgets:
 		if is_instance_valid(graph):
 			graph.cursor = index
@@ -61,7 +65,7 @@ func show_status(message: String) -> void:
 	status.text = message
 
 func reset_layout() -> void:
-	for panel in [telemetry_panel, playback_panel, view_panel, force_panel, graphs_panel]:
+	for panel in [telemetry_panel, playback_panel, view_panel, force_panel, trajectory_panel, graphs_panel]:
 		panel.set_meta("user_moved", false)
 	_layout_ui()
 
@@ -91,11 +95,15 @@ func _build() -> void:
 	_button(playback, "Play / Pause", func(): playback_toggle_requested.emit())
 	_button(playback, "Step ▶", func(): playback_step_requested.emit(1))
 	var speed_select := OptionButton.new()
-	for choice in ["0.25x", "0.5x", "1x", "1.5x", "2x"]:
+	for choice in ["0.25x", "0.5x", "1x real-time", "1.5x", "2x", "4x", "8x"]:
 		speed_select.add_item(choice)
 	speed_select.select(2)
-	speed_select.item_selected.connect(func(selected: int): speed_requested.emit([0.25, 0.5, 1.0, 1.5, 2.0][selected]))
+	speed_select.item_selected.connect(func(selected: int): speed_requested.emit([0.25, 0.5, 1.0, 1.5, 2.0, 4.0, 8.0][selected]))
 	playback.add_child(speed_select)
+	var loop_toggle := CheckButton.new()
+	loop_toggle.text = "Loop (5 s)"
+	loop_toggle.toggled.connect(func(enabled: bool): loop_enabled_requested.emit(enabled))
+	playback.add_child(loop_toggle)
 	timeline = HSlider.new()
 	timeline.custom_minimum_size.x = 130
 	timeline.step = 1.0
@@ -109,7 +117,6 @@ func _build() -> void:
 	_button(camera_buttons, "Fly-by", func(): camera_mode_requested.emit(0))
 	_button(camera_buttons, "Orbit (right drag)", func(): camera_mode_requested.emit(1))
 	_button(camera_buttons, "Engine landing", func(): camera_mode_requested.emit(2))
-	_button(camera_buttons, "Cloud", func(): cloud_toggle_requested.emit())
 	camera_controls.add_child(_label("Hold right mouse button and drag in the 3D view to orbit.", 12))
 
 	graphs_panel = _panel()
@@ -130,8 +137,16 @@ func _build() -> void:
 		graph.column = column
 		graph.title = TelemetrySchema.display_name(column)
 		graph.pop_out_requested.connect(_open_graph_window)
+		graph.expanded_changed.connect(_move_graph_for_expansion)
 		graph_list.add_child(graph)
 		graph_widgets.append(graph)
+	var collapsed := ScrollContainer.new()
+	collapsed.name = "Collapsed"
+	collapsed.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	tabs.add_child(collapsed)
+	collapsed_graph_list = VBoxContainer.new()
+	collapsed_graph_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	collapsed.add_child(collapsed_graph_list)
 	var pid := VBoxContainer.new()
 	pid.name = "Fluid P&ID"
 	pid.add_child(_label("Fluid system MVP", 18))
@@ -140,19 +155,34 @@ func _build() -> void:
 	var body := VBoxContainer.new()
 	body.name = "Body Frame"
 	body.add_child(_label("CG & tank frame", 18))
-	body.add_child(_label("Cyan: CG\nGold: CP\nBlue: fuel\nGreen: oxidizer\nOrange: thrust\nGreen: velocity\nPink: RCS", 14))
+	body.add_child(_label("Cyan: CG\nGold: CP\nBlue: fuel\nGreen: oxidizer\nOrange: thrust\nGreen: velocity", 14))
 	tabs.add_child(body)
 
 	force_panel = _panel()
 	var vectors := _stack(force_panel, "VECTOR DISPLAY  •  drag this card")
 	var vector_toggles := HFlowContainer.new()
 	vectors.add_child(vector_toggles)
-	for definition in [["Thrust", "thrust"], ["Velocity", "velocity"], ["RCS", "rcs"]]:
+	for definition in [["Thrust", "thrust"], ["Velocity", "velocity"]]:
 		var toggle := CheckButton.new()
 		toggle.text = definition[0]
 		toggle.button_pressed = true
 		toggle.toggled.connect(func(enabled: bool): vector_toggle_requested.emit(definition[1], enabled))
 		vector_toggles.add_child(toggle)
+
+	trajectory_panel = _panel()
+	var trajectory_aids := _stack(trajectory_panel, "TRAJECTORY AIDS  •  drag this card")
+	var aid_toggles := HFlowContainer.new()
+	trajectory_aids.add_child(aid_toggles)
+	var ellipse_toggle := CheckButton.new()
+	ellipse_toggle.text = "Landing ellipse"
+	ellipse_toggle.button_pressed = true
+	ellipse_toggle.toggled.connect(func(visible: bool): landing_ellipse_toggle_requested.emit(visible))
+	aid_toggles.add_child(ellipse_toggle)
+	var monte_carlo_toggle := CheckButton.new()
+	monte_carlo_toggle.text = "Monte Carlo"
+	monte_carlo_toggle.button_pressed = true
+	monte_carlo_toggle.toggled.connect(func(visible: bool): monte_carlo_toggle_requested.emit(visible))
+	aid_toggles.add_child(monte_carlo_toggle)
 
 	file_dialog = FileDialog.new()
 	file_dialog.file_mode = FileDialog.FILE_MODE_OPEN_FILE
@@ -180,17 +210,31 @@ func _open_graph_window(source: Control) -> void:
 	window.title = "%s — Telemetry Graph" % source.title
 	window.size = Vector2i(900, 560)
 	window.min_size = Vector2i(520, 300)
-	add_child(window)
+	window.transient = true
+	window.unresizable = false
+	# Keep windows movable onto another monitor instead of embedding them in the UI.
+	get_window().gui_embed_subwindows = false
+	get_tree().current_scene.add_child(window)
 	var graph := TelemetryGraphScript.new()
 	graph.database = database
 	graph.column = source.column
 	graph.title = source.title
 	graph.line_color = source.line_color
+	graph.show_expand_toggle = false
 	graph.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	window.add_child(graph)
 	popup_graph_widgets.append(graph)
 	window.close_requested.connect(func(): popup_graph_widgets.erase(graph); window.queue_free())
 	window.popup_centered()
+
+func _move_graph_for_expansion(graph: Control, expanded: bool) -> void:
+	var target_list := graph_list if expanded else collapsed_graph_list
+	graph.reparent(target_list)
+	var target_index := 0
+	for sibling in target_list.get_children():
+		if sibling != graph and sibling.column < graph.column:
+			target_index += 1
+	target_list.move_child(graph, target_index)
 
 func _panel() -> PanelContainer:
 	var panel := PanelContainer.new()
@@ -233,9 +277,11 @@ func _layout_ui() -> void:
 	_apply_layout(telemetry_panel, Vector2(margin, margin), Vector2(left_width * 0.78, maxf(146.0, 156.0 * scale)))
 	_apply_layout(playback_panel, Vector2(margin, telemetry_panel.position.y + telemetry_panel.size.y + margin), Vector2(left_width, maxf(150.0, 158.0 * scale)))
 	_apply_layout(force_panel, Vector2(margin, playback_panel.position.y + playback_panel.size.y + margin), Vector2(minf(left_width, 350.0 * scale), 74.0))
+	_apply_layout(trajectory_panel, Vector2(margin, force_panel.position.y + force_panel.size.y + margin), Vector2(left_width, 74.0))
 	_apply_layout(view_panel, Vector2(margin, size.y - maxf(104.0, 110.0 * scale) - margin), Vector2(left_width * 0.82, maxf(104.0, 110.0 * scale)))
 	_apply_layout(graphs_panel, Vector2(size.x - graph_width - margin, margin), Vector2(graph_width, maxf(330.0 * scale, size.y - margin * 2.0)))
 	graph_list.custom_minimum_size.x = maxf(280.0, graphs_panel.size.x - 30.0)
+	collapsed_graph_list.custom_minimum_size.x = maxf(280.0, graphs_panel.size.x - 30.0)
 	for graph in graph_widgets:
 		graph.set_card_width(graphs_panel.size.x - 30.0)
 

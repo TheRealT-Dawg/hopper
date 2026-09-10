@@ -7,17 +7,15 @@ var cg_marker: MeshInstance3D
 var cp_marker: MeshInstance3D
 var thrust_arrow: MeshInstance3D
 var velocity_arrow: MeshInstance3D
-var rcs_arrow: MeshInstance3D
 var fuel: MeshInstance3D
 var oxidizer: MeshInstance3D
-var vector_enabled := {"thrust": true, "velocity": true, "rcs": true}
+var vector_enabled := {"thrust": true, "velocity": true}
 
 func _ready() -> void:
 	cg_marker = _sphere(Color("56e0ff"), 0.07)
 	cp_marker = _sphere(Color("ffcf5c"), 0.06)
 	thrust_arrow = _cylinder(Color("ff7b38"), 0.035)
 	velocity_arrow = _cylinder(Color("57e389"), 0.025)
-	rcs_arrow = _cylinder(Color("e85aad"), 0.02)
 	fuel = _tank(Color("36a8ffff"), -0.30)
 	oxidizer = _tank(Color("70e090ff"), 0.28)
 
@@ -38,11 +36,6 @@ func update_telemetry(row: PackedFloat64Array, initial_fuel: float, initial_ox: 
 		_set_arrow(velocity_arrow, Vector3.ZERO, velocity, clampf(world_velocity.length() / 120.0, 0.08, 1.8))
 	else:
 		velocity_arrow.visible = false
-	var command := row[TelemetrySchema.Column.CONTROL]
-	if vector_enabled["rcs"]:
-		_set_arrow(rcs_arrow, Vector3(0.22, 0.3, 0), Vector3(command, 0.15, 0), clampf(absf(command), 0.04, 0.8))
-	else:
-		rcs_arrow.visible = false
 	_set_fill(fuel, row[TelemetrySchema.Column.FUEL_MASS], initial_fuel, -0.30)
 	_set_fill(oxidizer, row[TelemetrySchema.Column.OX_MASS], initial_ox, 0.28)
 
