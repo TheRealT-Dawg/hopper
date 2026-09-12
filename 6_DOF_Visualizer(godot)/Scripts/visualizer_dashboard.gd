@@ -48,7 +48,9 @@ func update_readout(row: PackedFloat64Array, index: int, initial_fuel: float, in
 	var mass := row[TelemetrySchema.Column.FUEL_MASS] + row[TelemetrySchema.Column.OX_MASS]
 	var twr := row[TelemetrySchema.Column.THRUST] / maxf(mass * 9.80665, 1.0)
 	var saturation := "SATURATING" if absf(row[TelemetrySchema.Column.CONTROL]) > 0.95 else "tracking"
-	hud.text = "TELEMETRY  %s\nt = %.2f s   sample %d / %d\nAltitude %.1f m   speed %.1f m/s\nThrust %.0f N   mass %.1f kg   TWR %.2f\nTVC / RCS %+.2f  %s" % [database.source_label, row[TelemetrySchema.Column.TIME], index + 1, database.rows.size(), row[TelemetrySchema.Column.UP], velocity, row[TelemetrySchema.Column.THRUST], mass, twr, row[TelemetrySchema.Column.CONTROL], saturation]
+	var fuel_mass := row[TelemetrySchema.Column.FUEL_MASS]
+	var ox_mass := row[TelemetrySchema.Column.OX_MASS]
+	hud.text = "TELEMETRY  %s\nt = %.2f s   sample %d / %d\nAltitude %.1f m   speed %.1f m/s\nThrust %.0f N   mass %.1f kg   TWR %.2f\nTVC / RCS %+.2f  %s \nFuel Mass %.2f kg \nOx mass %.2f kg" % [database.source_label, row[TelemetrySchema.Column.TIME], index + 1, database.rows.size(), row[TelemetrySchema.Column.UP], velocity, row[TelemetrySchema.Column.THRUST], mass, twr, row[TelemetrySchema.Column.CONTROL], saturation, fuel_mass, ox_mass]
 	for graph in graph_widgets + popup_graph_widgets:
 		if is_instance_valid(graph):
 			graph.cursor = index
