@@ -98,8 +98,8 @@ func _draw() -> void:
 	var current_x := _point_for(cursor, plot, limits, span).x
 	draw_line(Vector2(current_x, plot.position.y), Vector2(current_x, plot.end.y), Color("ffd166"), 1.0)
 	draw_line(Vector2(plot.position.x, plot.end.y), Vector2(plot.end.x, plot.end.y), Color("355166"), 1.0)
-	draw_string(ThemeDB.fallback_font, plot.position + Vector2(2, 13), "%.2f" % limits.y, HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color("9eb2c1"))
-	draw_string(ThemeDB.fallback_font, plot.position + Vector2(2, plot.size.y), "%.2f" % limits.x, HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color("9eb2c1"))
+	draw_string(ThemeDB.fallback_font, plot.position + Vector2(2, 13), _format_value(limits.y), HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color("9eb2c1"))
+	draw_string(ThemeDB.fallback_font, plot.position + Vector2(2, plot.size.y), _format_value(limits.x), HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color("9eb2c1"))
 	_draw_time_axis(plot)
 	if hover_index >= 0:
 		_draw_hover(plot, limits, span)
@@ -126,7 +126,7 @@ func _draw_hover(plot: Rect2, limits: Vector2, span: float) -> void:
 	var reading: PackedFloat64Array = database.rows[hover_index]
 	draw_line(Vector2(point.x, plot.position.y), Vector2(point.x, plot.end.y), Color("ffffffaa"), 1.0)
 	draw_circle(point, 3.5, Color.WHITE)
-	var text := "t = %.3f s    %s = %.3f" % [reading[TelemetrySchema.Column.TIME], title, reading[column]]
+	var text := "t = %.3f s    %s = %s" % [reading[TelemetrySchema.Column.TIME], TelemetrySchema.display_name(column), _format_value(reading[column])]
 	var text_size := ThemeDB.fallback_font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, 12)
 	var tooltip := Rect2(point + Vector2(8, -30), text_size + Vector2(12, 10))
 	if tooltip.end.x > size.x - 5:
@@ -135,6 +135,11 @@ func _draw_hover(plot: Rect2, limits: Vector2, span: float) -> void:
 		tooltip.position.y = point.y + 8
 	draw_style_box(_tooltip_style(), tooltip)
 	draw_string(ThemeDB.fallback_font, tooltip.position + Vector2(6, 15), text, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, Color.WHITE)
+
+func _format_value(value: float) -> String:
+	var value_unit := TelemetrySchema.unit(column)
+	var number := "%.3f" % value
+	return "%s %s" % [number, value_unit] if not value_unit.is_empty() else number
 
 func _panel_style() -> StyleBoxFlat:
 	var style := StyleBoxFlat.new()

@@ -5,7 +5,7 @@ signal telemetry_file_selected(path: String)
 signal reference_file_selected(path: String)
 signal tcp_requested
 signal export_requested
-signal settings_requested
+signal administration_requested
 signal playback_step_requested(amount: int)
 signal playback_toggle_requested
 signal speed_requested(multiplier: float)
@@ -35,6 +35,7 @@ var graphs_panel: PanelContainer
 var graph_list: VBoxContainer
 var collapsed_graph_list: VBoxContainer
 var file_dialog: FileDialog
+var administration_button: Button
 var _file_action := "telemetry"
 
 func configure(data_source: Node) -> void:
@@ -70,6 +71,11 @@ func reset_layout() -> void:
 	_layout_ui()
 
 func _build() -> void:
+	administration_button = Button.new()
+	administration_button.text = "Menu"
+	administration_button.tooltip_text = "Open administration and visual settings"
+	administration_button.pressed.connect(func(): administration_requested.emit())
+	add_child(administration_button)
 	telemetry_panel = _panel()
 	var telemetry_stack := _stack(telemetry_panel, "TELEMETRY  •  drag this card")
 	hud = _label("", 15)
@@ -87,7 +93,6 @@ func _build() -> void:
 	_button(sources, "TCP :8080", func(): tcp_requested.emit())
 	_button(sources, "Export CSV", func(): export_requested.emit())
 	_button(sources, "Reference CSV", _choose_reference)
-	_button(sources, "Settings", func(): settings_requested.emit())
 	_button(sources, "Reset layout", reset_layout)
 	var playback := HFlowContainer.new()
 	controls.add_child(playback)
@@ -135,7 +140,7 @@ func _build() -> void:
 		var graph := TelemetryGraphScript.new()
 		graph.database = database
 		graph.column = column
-		graph.title = TelemetrySchema.display_name(column)
+		graph.title = TelemetrySchema.display_name_with_unit(column)
 		graph.pop_out_requested.connect(_open_graph_window)
 		graph.expanded_changed.connect(_move_graph_for_expansion)
 		graph_list.add_child(graph)
@@ -272,9 +277,12 @@ func _layout_ui() -> void:
 		return
 	var scale := clampf(minf(size.x / 1600.0, size.y / 900.0), 0.72, 1.20)
 	var margin := 12.0 * scale
+	administration_button.position = Vector2(margin, margin)
+	administration_button.size = Vector2(maxf(102.0, 110.0 * scale), 30.0 * scale)
+	var top_offset := administration_button.position.y + administration_button.size.y + margin
 	var left_width := maxf(310.0 * scale, minf(510.0 * scale, size.x * 0.46))
 	var graph_width := maxf(290.0 * scale, minf(430.0 * scale, size.x * 0.34))
-	_apply_layout(telemetry_panel, Vector2(margin, margin), Vector2(left_width * 0.78, maxf(146.0, 156.0 * scale)))
+	_apply_layout(telemetry_panel, Vector2(margin, top_offset), Vector2(left_width * 0.78, maxf(146.0, 156.0 * scale)))
 	_apply_layout(playback_panel, Vector2(margin, telemetry_panel.position.y + telemetry_panel.size.y + margin), Vector2(left_width, maxf(150.0, 158.0 * scale)))
 	_apply_layout(force_panel, Vector2(margin, playback_panel.position.y + playback_panel.size.y + margin), Vector2(minf(left_width, 350.0 * scale), 74.0))
 	_apply_layout(trajectory_panel, Vector2(margin, force_panel.position.y + force_panel.size.y + margin), Vector2(left_width, 74.0))

@@ -8,13 +8,17 @@ const DashboardScript = preload("res://Scripts/visualizer_dashboard.gd")
 const DemoTelemetry = preload("res://Scripts/demo_telemetry.gd")
 const TelemetrySchema = preload("res://Scripts/telemetry_schema.gd")
 const TelemetryInterpolator = preload("res://Scripts/telemetry_interpolator.gd")
+const AdministrationPanelScene = preload("res://Scenes/administration_panel.tscn")
+const PdfReportExporter = preload("res://Scripts/pdf_report_exporter.gd")
 
 var database: Node
 var playback: Node
 var flight_world: Node
 var dashboard: Control
+var interface_layer: CanvasLayer
 var initial_fuel := 1.0
 var initial_ox := 1.0
+var administration_panel: Control
 
 func _ready() -> void:
 	database = TelemetryDatabaseScript.new()
@@ -24,10 +28,10 @@ func _ready() -> void:
 	add_child(database)
 	add_child(playback)
 	add_child(flight_world)
-	var layer := CanvasLayer.new()
-	add_child(layer)
+	interface_layer = CanvasLayer.new()
+	add_child(interface_layer)
 	dashboard.configure(database)
-	layer.add_child(dashboard)
+	interface_layer.add_child(dashboard)
 	_connect_modules()
 	database.rows = DemoTelemetry.create_rows()
 	database.data_changed.emit()
@@ -39,7 +43,7 @@ func _connect_modules() -> void:
 	dashboard.reference_file_selected.connect(_load_reference)
 	dashboard.tcp_requested.connect(_start_tcp)
 	dashboard.export_requested.connect(_export_csv)
-	dashboard.settings_requested.connect(_show_settings)
+	dashboard.administration_requested.connect(_open_administration)
 	dashboard.playback_step_requested.connect(playback.step)
 	dashboard.playback_toggle_requested.connect(playback.toggle_playing)
 	dashboard.speed_requested.connect(playback.set_speed)
@@ -88,8 +92,34 @@ func _export_csv() -> void:
 	if database.export_csv(path):
 		dashboard.show_status("Exported telemetry to %s" % path)
 
-func _show_settings() -> void:
-	dashboard.show_status("Settings: use the Trajectory Aids panel for landing ellipse and Monte Carlo visibility. TCP archive cap: 1000 rows.")
+func _open_administration() -> void:
+	if is_instance_valid(administration_panel):
+		return
+	administration_panel = AdministrationPanelScene.instantiate()
+	administration_panel.configure(database)
+	administration_panel.back_requested.connect(_close_administration)
+	administration_panel.pdf_export_requested.connect(_export_pdf_report)
+	administration_panel.palette_requested.connect(flight_world.set_overlay_palette)
+	administration_panel.landing_ellipse_toggled.connect(flight_world.set_landing_ellipse_visible)
+	administration_panel.monte_carlo_toggled.connect(flight_world.set_monte_carlo_visible)
+	dashboard.hide()
+	interface_layer.add_child(administration_panel)
+
+func _close_administration() -> void:
+	if is_instance_valid(administration_panel):
+		administration_panel.queue_free()
+	administration_panel = null
+	dashboard.show()
+
+func _export_pdf_report(path: String) -> void:
+	if PdfReportExporter.export_report(path, database):
+		dashboard.show_status("Exported graph report to %s" % path)
+		if is_instance_valid(administration_panel):
+			administration_panel.show_status("Exported graph report to %s" % path)
+	else:
+		dashboard.show_status("Could not export graph report to %s" % path)
+		if is_instance_valid(administration_panel):
+			administration_panel.show_status("Could not export graph report to %s" % path)
 
 func _process(delta: float) -> void:
 	flight_world.update_camera(delta)

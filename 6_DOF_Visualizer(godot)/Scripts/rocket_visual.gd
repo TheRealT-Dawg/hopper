@@ -90,6 +90,31 @@ func set_vector_enabled(kind: String, enabled: bool) -> void:
 	if vector_enabled.has(kind):
 		vector_enabled[kind] = enabled
 
+func set_overlay_palette(palette_name: String) -> void:
+	var colors := _palette_colors(palette_name)
+	_set_overlay_color(cg_marker, colors["cg"])
+	_set_overlay_color(cp_marker, colors["cp"])
+	_set_overlay_color(thrust_arrow, colors["thrust"])
+	_set_overlay_color(velocity_arrow, colors["velocity"])
+	_set_overlay_color(fuel, colors["fuel"])
+	_set_overlay_color(oxidizer, colors["oxidizer"])
+
+func _palette_colors(palette_name: String) -> Dictionary:
+	match palette_name:
+		"high_contrast":
+			return {"cg": Color("00e5ff"), "cp": Color("ffe600"), "thrust": Color("ff6b00"), "velocity": Color("65ff7a"), "fuel": Color("2d9cff"), "oxidizer": Color("65ff7a")}
+		"monochrome":
+			return {"cg": Color("e8eef2"), "cp": Color("d0d8de"), "thrust": Color("ffffff"), "velocity": Color("b9c8d1"), "fuel": Color("a8b8c2"), "oxidizer": Color("c7d3da")}
+		_:
+			return {"cg": Color("56e0ff"), "cp": Color("ffcf5c"), "thrust": Color("ff7b38"), "velocity": Color("57e389"), "fuel": Color("36a8ff"), "oxidizer": Color("70e090")}
+
+func _set_overlay_color(node: MeshInstance3D, color: Color) -> void:
+	var material := node.material_override as StandardMaterial3D
+	if material == null:
+		return
+	material.albedo_color = Color(color.r, color.g, color.b, material.albedo_color.a)
+	material.emission = color
+
 func _emission_material(color: Color, alpha: float = 1.0) -> StandardMaterial3D:
 	var material := StandardMaterial3D.new()
 	material.albedo_color = Color(color, alpha)

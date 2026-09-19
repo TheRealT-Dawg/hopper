@@ -15,6 +15,9 @@ var camera: Camera3D
 var trace_mesh := ImmediateMesh.new()
 var reference_mesh := ImmediateMesh.new()
 var projection_mesh := ImmediateMesh.new()
+var trace_line: MeshInstance3D
+var reference_line: MeshInstance3D
+var projection_line: MeshInstance3D
 var ground_position_marker: MeshInstance3D
 var landing_ellipse: MeshInstance3D
 var landing_target: MeshInstance3D
@@ -95,9 +98,9 @@ func _build_cloud_layer() -> void:
 		cloud_layer.add_child(puff)
 
 func _build_trajectory_guides() -> void:
-	_add_line_mesh(trace_mesh, Color("58d6ff"))
-	_add_line_mesh(reference_mesh, Color("ffcf5c"))
-	_add_line_mesh(projection_mesh, Color("ff334f"))
+	trace_line = _add_line_mesh(trace_mesh, Color("58d6ff"))
+	reference_line = _add_line_mesh(reference_mesh, Color("ffcf5c"))
+	projection_line = _add_line_mesh(projection_mesh, Color("ff334f"))
 	var ellipse := ImmediateMesh.new()
 	landing_ellipse = _add_line_mesh(ellipse, Color("f2b84b"))
 	ellipse.surface_begin(Mesh.PRIMITIVE_LINE_STRIP)
@@ -161,6 +164,35 @@ func set_landing_ellipse_visible(visible: bool) -> void:
 func set_monte_carlo_visible(visible: bool) -> void:
 	monte_carlo_cloud.visible = visible
 	covariance_ellipsoid.visible = visible
+
+func set_overlay_palette(palette_name: String) -> void:
+	var colors := _palette_colors(palette_name)
+	_set_overlay_color(trace_line, colors["trace"])
+	_set_overlay_color(reference_line, colors["reference"])
+	_set_overlay_color(projection_line, colors["projection"])
+	_set_overlay_color(landing_ellipse, colors["landing"])
+	_set_overlay_color(landing_target, colors["landing"])
+	_set_overlay_color(ground_position_marker, colors["projection"])
+	_set_overlay_color(monte_carlo_cloud, colors["uncertainty"])
+	_set_overlay_color(covariance_ellipsoid, colors["uncertainty"])
+	rocket_visual.set_overlay_palette(palette_name)
+
+func _palette_colors(palette_name: String) -> Dictionary:
+	match palette_name:
+		"high_contrast":
+			return {"trace": Color("00e5ff"), "reference": Color("ffe600"), "projection": Color("ff2b63"), "landing": Color("ff8c00"), "uncertainty": Color("b15cff")}
+		"monochrome":
+			return {"trace": Color("d7e4ec"), "reference": Color("b6c5cf"), "projection": Color("ffffff"), "landing": Color("e6e6e6"), "uncertainty": Color("96a6b2")}
+		_:
+			return {"trace": Color("58d6ff"), "reference": Color("ffcf5c"), "projection": Color("ff334f"), "landing": Color("f2b84b"), "uncertainty": Color("bd8cff")}
+
+func _set_overlay_color(node: GeometryInstance3D, color: Color) -> void:
+	var material := node.material_override as StandardMaterial3D
+	if material == null:
+		return
+	material.albedo_color = Color(color.r, color.g, color.b, material.albedo_color.a)
+	if material.emission_enabled:
+		material.emission = color
 
 func set_trace(rows: Array[PackedFloat64Array]) -> void:
 	trace_mesh.clear_surfaces()
