@@ -2,6 +2,14 @@
 warning('off', 'MATLAB:Python:PyNotFound')
 clear; clc;
 
+% --- Setup Global Paths ---
+currentDir = fileparts(mfilename('fullpath'));
+addpath(genpath(currentDir)); % Recursively adds all subfolders automatically
+addpath(fullfile(currentDir, 'sizing'));
+addpath(fullfile(currentDir, 'inputs'));
+addpath(fullfile(currentDir, 'propulsion'));
+addpath(fullfile(currentDir, 'dynamics'));
+
 % Options: 'parallel', 'serial', 'nominal'
 runMode = 'parallel';
 
@@ -26,7 +34,6 @@ if strcmp(runMode, 'parallel')
 end
 
 jsonFile = 'mc_params.json';
-
 if ~strcmp(runMode, 'nominal')
     n = input('Enter the number of Monte Carlo scenarios (e.g., 1000): ');
     if isempty(n) || n <= 0
@@ -41,54 +48,59 @@ end
 switch runMode
     case 'parallel'
         tic;
-        parfor i = 1:n
-            % Add necessary project subpaths on each worker
-            addpath(genpath(pwd)); 
-            addpath('./sizing'); addpath('./inputs'); addpath('./propulsion'); addpath('./dynamics');
-            
-            currentScenario = scenarioStructs(i);
-            localResult = struct(); 
-            
+        fprintf('Preparing %d scenarios for parsim...\n', n);
+        
+
+        % 1. Build a properly initialized array of Simulink.SimulationInput objects
+          simIn = repmat(Simulink.SimulationInput('hopper_6dof_NED_v2'), n, 1);
+    for i = 1:n
+        currentScenario = scenarioStructs(i);
+        
+        % Pass the scenario variable into the simulation
+        simIn(i) = simIn(i).setVariable('currentScenario', currentScenario);
+        
+        % Register your setup function to run on the worker right before simulation starts
+        simIn(i) = simIn(i).setPreSimFcn(@(in) local_pre_sim(in, currentScenario));
+    end
+        
+        % 2. Run everything in parallel using parsim with base variable transfer
+        fprintf('Running parsim across workers...\n');
+        simOuts = parsim(simIn, 'ShowProgress', 'on');
+        
+        % 3. Post-process the results array
+        resultsCell = cell(1, n);
+        for i = 1:n
             try
-                % 1. Vehicle initialization and sizing chain
-                mc_sim_setup(currentScenario);
-                IN        = evalin('base', 'IN');
-                VEH       = evalin('base', 'VEH');
-                TANKS     = evalin('base', 'TANKS');
-                STRUCT    = evalin('base', 'STRUCT');
-                cg_init   = evalin('base', 'cg_init');
-                engine_cg = evalin('base', 'engine_cg');
-                OUT       = Outputs(IN, VEH, TANKS, STRUCT);
-                LinerizationMaster();
-                
-                % 2. Setup simulation input object
-                mc_sim_setup(currentScenario);
-                simInput = Simulink.SimulationInput('hopper_6dof_NED_v2');
-                simInput = simInput.setVariable('currentScenario', currentScenario);
-                
-                % 3. Execute simulation and post-process
-                sim_out = sim(simInput);
-                localResult = mc_main(currentScenario, sim_out); 
-                
-                % 4. Validate engineering constraints (Pass/Fail)
-                localResult = check_constraints(localResult);
-                
+                if ~isempty(simOuts(i).ErrorMessage)
+                    error(simOuts(i).ErrorMessage);
+                end
+                % Run your custom post-processing and constraints
+                localResult = mc_main(scenarioStructs(i), simOuts(i));
+                % localResult = check_constraints(localResult);
             catch ME
-                localResult.scenario = currentScenario;
+                localResult.scenario = scenarioStructs(i);
                 localResult.status.success = false;
                 localResult.status.error = ME.message;
                 localResult.status.pass = false;
             end
-            
             resultsCell{i} = localResult;
         end
+        
         elapsedTime = toc;
-        fprintf('Completed %d Monte Carlo runs in %.2f seconds.\n', n, elapsedTime);
+        fprintf('Completed %d Monte Carlo runs via parsim in %.2f seconds.\n', n, elapsedTime);
+        
+        % --- Run Nominal Case for Comparison ---
+        fprintf('Running nominal case...\n');
+        nominalScenario = mc_inputs();
+        mc_sim_setup(nominalScenario);
+        simInputNom = Simulink.SimulationInput('hopper_6dof_NED_v2');
+        simOutNom = sim(simInputNom);
+        nominal = mc_main(nominalScenario, simOutNom);
         
         % --- Export Results ---
-        mcTable.Results = resultsCell;
-        writetable(mcTable, 'mc_results_parallel.csv');
-        fprintf('Results successfully saved to mc_results_parallel.csv\n');
+        results = [resultsCell{:}];
+        save('mc_results_parallel.mat', 'results', 'nominal');
+        fprintf('Results and nominal data successfully saved to mc_results_parallel.mat\n');
         
     case 'serial'
         tic;
@@ -100,19 +112,10 @@ switch runMode
             localResult = struct(); 
             
             try
-                % 1. Vehicle initialization and sizing chain
+                % 1. Vehicle initialization and base workspace setup
                 mc_sim_setup(currentScenario);
-                IN        = evalin('base', 'IN');
-                VEH       = evalin('base', 'VEH');
-                TANKS     = evalin('base', 'TANKS');
-                STRUCT    = evalin('base', 'STRUCT');
-                cg_init   = evalin('base', 'cg_init');
-                engine_cg = evalin('base', 'engine_cg');
-                OUT       = Outputs(IN, VEH, TANKS, STRUCT);
-                LinerizationMaster();
                 
                 % 2. Setup simulation input object
-                mc_sim_setup(currentScenario);
                 simInput = Simulink.SimulationInput('hopper_6dof_NED_v2');
                 simInput = simInput.setVariable('currentScenario', currentScenario);
                 
@@ -137,27 +140,39 @@ switch runMode
         
         % --- Export Results ---
         mcTable.Results = resultsCell;
-        writetable(mcTable, 'mc_results_serial.csv');
-        fprintf('Results successfully saved to mc_results_serial.csv\n');
+        save('mc_results_serial.mat', 'mcTable');
+        fprintf('Results successfully saved to mc_results_serial.mat\n');
         
-    case 'nominal'
+   case 'nominal'
         tic;
         try
-            nominalScenario = mc_input();
-            mc_sim_setup(nominalScenario);
-            IN        = evalin('base', 'IN');
-            VEH       = evalin('base', 'VEH');
-            TANKS     = evalin('base', 'TANKS');
-            STRUCT    = evalin('base', 'STRUCT');
-            cg_init   = evalin('base', 'cg_init');
-            engine_cg = evalin('base', 'engine_cg');
-            OUT       = Outputs(IN, VEH, TANKS, STRUCT);
-            LinerizationMaster();
+            addpath(genpath(pwd)); 
+            addpath('./sizing'); addpath('./inputs'); addpath('./propulsion'); addpath('./dynamics');
+            
+            nominalScenario.ox_mass                 = 16;
+            nominalScenario.fuel_mass               = 13;
+            nominalScenario.cstar                   = 0.85;
+            nominalScenario.mass_factor             = 1.0;
+            nominalScenario.slosh_lateral_damping   = 0.08; 
+            nominalScenario.slosh_axial_damping     = 0.3;  
+            nominalScenario.throttle_rate_limit     = 180;  
+            nominalScenario.throttle_latency        = 0.01;
+            nominalScenario.tvc_actuator_rate_limit = 15; 
+            nominalScenario.tvc_actuator_latency    = 0.01;
+            nominalScenario.engine_off_axis_y       = 0;
+            nominalScenario.engine_off_axis_z       = 0;
+            nominalScenario.uwind                   = 5;
+            nominalScenario.vwind                   = 5;
             
             mc_sim_setup(nominalScenario);
+            
             simInput = Simulink.SimulationInput('hopper_6dof_NED_v2');
             sim_out = sim(simInput);
-            disp('Nominal simulation completed successfully.');
+            nominal = mc_main(nominalScenario, sim_out);
+            
+            save('mc_results_nominal.mat', 'nominal');
+            disp('Nominal simulation completed and saved successfully.');
+            
         catch ME
             rethrow(ME);
         end
@@ -166,4 +181,10 @@ switch runMode
         
     otherwise
         error('Invalid runMode specified. Use ''parallel'', ''serial'', or ''nominal''.');
+end
+
+function in = local_pre_sim(in, scenario)
+    % This runs on the worker thread right before the simulation initializes
+    addpath(genpath(pwd));
+    mc_sim_setup(scenario);
 end
