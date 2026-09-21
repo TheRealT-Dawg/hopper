@@ -14,60 +14,15 @@ addpath(fullfile(currentDir, 'dynamics'));
 runMode = 'parallel';
 
 if strcmp(runMode, 'parallel')
-    % ------------------------------------------------------------
-    % User-tunable memory settings
-    % ------------------------------------------------------------
-    RAM_per_worker_GB = 4.0;   % Estimated RAM required per worker
-    RAM_reserve_GB    = 6.0;   % RAM reserved for OS + MATLAB client
+    
 
-    % ------------------------------------------------------------
-    % Get available system RAM
-    % ------------------------------------------------------------
-    try
-        [~, sys] = memory;
-        available_RAM_GB = sys.PhysicalMemory.Available / 1024^3;
-    catch
-        warning('Could not determine available system RAM.');
-        warning('Using 1 worker as a safe fallback.');
 
-        available_RAM_GB = RAM_reserve_GB + RAM_per_worker_GB;
-    end
 
-    % ------------------------------------------------------------
-    % Calculate worker limits
-    % ------------------------------------------------------------
-    usable_RAM_GB = max(0, available_RAM_GB - RAM_reserve_GB);
 
-    workers_by_RAM = floor(usable_RAM_GB / RAM_per_worker_GB);
-    workers_by_CPU = feature('numcores');
-
-    % Number of scenarios is not known yet, so scenario limit
-    % is applied after the user enters N.
-    workers_by_scenarios = Inf;
-
-    % Final worker count for now
-    numWorkers = min([workers_by_RAM, workers_by_CPU]);
-
-    % Always allow at least one worker
-    numWorkers = max(1, numWorkers);
-
-    fprintf('\n');
-    fprintf('===============================================\n');
-    fprintf(' Dynamic Parallel Worker Configuration\n');
-    fprintf('===============================================\n');
-    fprintf('Available RAM:       %.2f GB\n', available_RAM_GB);
-    fprintf('Reserved RAM:        %.2f GB\n', RAM_reserve_GB);
-    fprintf('Estimated RAM/worker: %.2f GB\n', RAM_per_worker_GB);
-    fprintf('RAM worker limit:    %d\n', workers_by_RAM);
-    fprintf('CPU worker limit:    %d\n', workers_by_CPU);
-    fprintf('Selected workers:    %d\n', numWorkers);
-    fprintf('===============================================\n\n');
-
-    % ------------------------------------------------------------
     if ~isempty(gcp('nocreate'))
         delete(gcp);
     end
-    parpool('local', numWorkers);
+    parpool();
 end
 
 % Attach all required models, lookup files, and subfolder directories to workers
