@@ -1,4 +1,4 @@
-% --- Monte Carlo Simulation Master Script ---
+% --- Monte Carlo Simulation Master Script (Per-Run Checkpointed) ---
 warning('off', 'MATLAB:Python:PyNotFound')
 clear; clc;
 
@@ -19,7 +19,7 @@ if strcmp(runMode, 'parallel')
     % ------------------------------------------------------------
     RAM_per_worker_GB = 4.0;   % Estimated RAM required per worker
     RAM_reserve_GB    = 6.0;   % RAM reserved for OS + MATLAB client
-
+    
     % ------------------------------------------------------------
     % Get available system RAM
     % ------------------------------------------------------------
@@ -29,28 +29,19 @@ if strcmp(runMode, 'parallel')
     catch
         warning('Could not determine available system RAM.');
         warning('Using 1 worker as a safe fallback.');
-
         available_RAM_GB = RAM_reserve_GB + RAM_per_worker_GB;
     end
-
+    
     % ------------------------------------------------------------
     % Calculate worker limits
     % ------------------------------------------------------------
     usable_RAM_GB = max(0, available_RAM_GB - RAM_reserve_GB);
-
     workers_by_RAM = floor(usable_RAM_GB / RAM_per_worker_GB);
     workers_by_CPU = feature('numcores');
-
-    % Number of scenarios is not known yet, so scenario limit
-    % is applied after the user enters N.
-    workers_by_scenarios = Inf;
-
-    % Final worker count for now
+    
     numWorkers = min([workers_by_RAM, workers_by_CPU]);
-
-    % Always allow at least one worker
     numWorkers = max(1, numWorkers);
-
+    
     fprintf('\n');
     fprintf('===============================================\n');
     fprintf(' Dynamic Parallel Worker Configuration\n');
@@ -62,8 +53,7 @@ if strcmp(runMode, 'parallel')
     fprintf('CPU worker limit:    %d\n', workers_by_CPU);
     fprintf('Selected workers:    %d\n', numWorkers);
     fprintf('===============================================\n\n');
-
-    % ------------------------------------------------------------
+    
     if ~isempty(gcp('nocreate'))
         delete(gcp);
     end
@@ -77,68 +67,80 @@ slxFiles = dir('*.slx');
 xlsxFiles = dir('*.xlsx');
 jsonFiles = dir('*.json');
 addAllFiles = [{matFiles.name}, {slxFiles.name}, {xlsxFiles.name}, {jsonFiles.name}, {mFiles.name}];
-
 if strcmp(runMode, 'parallel')
     p = gcp();
     addAttachedFiles(p, addAllFiles);
 end
 
 jsonFile = 'mc_params.json';
+ckptDir = fullfile(currentDir, 'mc_checkpoints'); % Use absolute path
+
+if ~exist(ckptDir, 'dir')
+    mkdir(ckptDir);
+end
+
 if ~strcmp(runMode, 'nominal')
     n = input('Enter the number of Monte Carlo scenarios (e.g., 1000): ');
     if isempty(n) || n <= 0
         error('Invalid input. Please enter a positive integer.');
     end
+    
     [scenarios, mcTable] = generateScenarios(jsonFile, n);
     scenarioStructs = table2struct(mcTable);
-    resultsCell = cell(n, 1); 
+    
+    % --- Load existing checkpoints per scenario ---
+    resultsCell = cell(n, 1);
+    for i = 1:n
+        ckptFile = fullfile(ckptDir, sprintf('scenario_%05d.mat', i));
+        if exist(ckptFile, 'file')
+            data = load(ckptFile, 'localResult');
+            resultsCell{i} = data.localResult;
+        end
+    end
+    completedCount = sum(~cellfun(@isempty, resultsCell));
+    fprintf('Checkpoint status: %d / %d scenarios already completed.\n', completedCount, n);
 end
 
 % --- Execution Router (Switch-Case) ---
 switch runMode
     case 'parallel'
         tic;
-        fprintf('Preparing %d scenarios for parsim...\n', n);
+        missingIdx = find(cellfun(@isempty, resultsCell));
+        numMissing = length(missingIdx);
         
-
-        % 1. Build a properly initialized array of Simulink.SimulationInput objects
-          simIn = repmat(Simulink.SimulationInput('hopper_6dof_NED_v2'), n, 1);
-    for i = 1:n
-        currentScenario = scenarioStructs(i);
-        
-        % Pass the scenario variable into the simulation
-        simIn(i) = simIn(i).setVariable('currentScenario', currentScenario);
-        
-        % Register your setup function to run on the worker right before simulation starts
-        simIn(i) = simIn(i).setPreSimFcn(@(in) local_pre_sim(in, currentScenario));
-    end
-        
-        % 2. Run everything in parallel using parsim with base variable transfer
-        fprintf('Running parsim across workers...\n');
-        simOuts = parsim(simIn, 'ShowProgress', 'on');
-        
-        % 3. Post-process the results array
-        resultsCell = cell(1, n);
-        for i = 1:n
-            try
-                if ~isempty(simOuts(i).ErrorMessage)
-                    error(simOuts(i).ErrorMessage);
-                end
-                % Run your custom post-processing and constraints
-                localResult = mc_main(scenarioStructs(i), simOuts(i));
-              
-                % localResult = check_constraints(localResult);
-            catch ME
-                localResult.scenario = scenarioStructs(i);
-                localResult.status.success = false;
-                localResult.status.error = ME.message;
-                localResult.status.pass = false;
+        if numMissing == 0
+            fprintf('All %d scenarios are already completed from checkpoints!\n', n);
+        else
+            fprintf('Preparing %d remaining scenarios for parallel execution...\n', numMissing);
+            
+            simIn = repmat(Simulink.SimulationInput('hopper_6dof_NED_v2'), numMissing, 1);
+            for k = 1:numMissing
+                i = missingIdx(k);
+                currentScenario = scenarioStructs(i);
+                
+                simIn(k) = simIn(k).setVariable('currentScenario', currentScenario);
+                simIn(k) = simIn(k).setPreSimFcn(@(in) local_pre_sim(in, currentScenario));
+                
+                % Pass absolute ckptDir into the post-sim function
+                simIn(k) = simIn(k).setPostSimFcn(@(out) local_post_sim(out, currentScenario, i, ckptDir));
             end
-            resultsCell{i} = localResult;
+            
+            fprintf('Running parsim across workers...\n');
+            simOuts = parsim(simIn, 'ShowProgress', 'on');
+            
+            % Reload the newly generated individual checkpoint files into resultsCell
+            for k = 1:numMissing
+                i = missingIdx(k);
+                ckptFile = fullfile(ckptDir, sprintf('scenario_%05d.mat', i));
+                if exist(ckptFile, 'file')
+                    data = load(ckptFile, 'localResult');
+                    resultsCell{i} = data.localResult;
+                end
+            end
         end
         
         elapsedTime = toc;
-        fprintf('Completed %d Monte Carlo runs via parsim in %.2f seconds.\n', n, elapsedTime);
+        fprintf('Completed parallel execution phase in %.2f seconds.\n', elapsedTime);
         
         % --- Run Nominal Case for Comparison ---
         fprintf('Running nominal case...\n');
@@ -148,14 +150,18 @@ switch runMode
         simOutNom = sim(simInputNom);
         nominal = mc_main(nominalScenario, simOutNom);
         
-        % --- Export Results ---
+        % --- Export Final Results ---
         results = [resultsCell{:}];
         save('mc_results_parallel.mat', 'results', 'nominal');
-        fprintf('Results and nominal data successfully saved to mc_results_parallel.mat\n');
+        fprintf('Final results and nominal data successfully saved to mc_results_parallel.mat\n');
         
     case 'serial'
         tic;
         for i = 1:n
+            if ~isempty(resultsCell{i})
+                continue;
+            end
+            
             addpath(genpath(pwd)); 
             addpath('./sizing'); addpath('./inputs'); addpath('./propulsion'); addpath('./dynamics');
             
@@ -163,20 +169,13 @@ switch runMode
             localResult = struct(); 
             
             try
-                % 1. Vehicle initialization and base workspace setup
                 mc_sim_setup(currentScenario);
-                
-                % 2. Setup simulation input object
                 simInput = Simulink.SimulationInput('hopper_6dof_NED_v2');
                 simInput = simInput.setVariable('currentScenario', currentScenario);
                 
-                % 3. Execute simulation and post-process
                 sim_out = sim(simInput);
                 localResult = mc_main(currentScenario, sim_out); 
-                
-                % 4. Validate engineering constraints (Pass/Fail)
                 localResult = check_constraints(localResult);
-                
             catch ME
                 localResult.scenario = currentScenario;
                 localResult.status.success = false;
@@ -185,14 +184,18 @@ switch runMode
             end
             
             resultsCell{i} = localResult;
+            
+            % Save individual checkpoint file immediately after each run
+            ckptFile = fullfile(ckptDir, sprintf('scenario_%05d.mat', i));
+            save(ckptFile, 'localResult');
         end
-        elapsedTime = toc;
-        fprintf('Completed %d sequential runs in %.2f seconds.\n', n, elapsedTime);
         
-        % --- Export Results ---
+        elapsedTime = toc;
+        fprintf('Completed sequential execution runs in %.2f seconds.\n', elapsedTime);
+        
         mcTable.Results = resultsCell;
         save('mc_results_serial.mat', 'mcTable');
-        fprintf('Results successfully saved to mc_results_serial.mat\n');
+        fprintf('Final results successfully saved to mc_results_serial.mat\n');
         
    case 'nominal'
         tic;
@@ -235,7 +238,26 @@ switch runMode
 end
 
 function in = local_pre_sim(in, scenario)
-    % This runs on the worker thread right before the simulation initializes
     addpath(genpath(pwd));
     mc_sim_setup(scenario);
+end
+
+function out = local_post_sim(out, scenario, idx, ckptDir)
+    % This runs on the worker thread the exact moment a simulation finishes
+    addpath(genpath(pwd));
+    try
+        if ~isempty(out.ErrorMessage)
+            error(out.ErrorMessage);
+        end
+        localResult = mc_main(scenario, out);
+    catch ME
+        localResult.scenario = scenario;
+        localResult.status.success = false;
+        localResult.status.error = ME.message;
+        localResult.status.pass = false;
+    end
+    
+    % Save individual checkpoint file instantly to the absolute path
+    ckptFile = fullfile(ckptDir, sprintf('scenario_%05d.mat', idx));
+    save(ckptFile, 'localResult');
 end
