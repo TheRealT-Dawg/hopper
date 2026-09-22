@@ -137,3 +137,20 @@ z_ref_ts = timeseries(z_trajectory', t);
 T_ref_ts = timeseries(T_profile, t);
 vz_ref_ts = timeseries(vz_trajectory', t);
 
+% --- EXPORT EVERYTHING TO BASE WORKSPACE FOR SIMULINK ---
+assignin('base', 'tgrid',                 tgrid);
+assignin('base', 'unom',                  unom);
+assignin('base', 'Target_Trajectory',     Target_Trajectory);
+assignin('base', 'z_ref_ts',              z_ref_ts);
+assignin('base', 'vz_ref_ts',             vz_ref_ts);
+assignin('base', 'K1flat',                K1flat);
+assignin('base', 'K2grid',                K2grid);
+assignin('base', 'K2grid_mod',            K2grid_mod);
+
+% Check if your model uses T_ts or T_ref_ts (pushing both covers all bases)
+if exist('T_ts', 'var')
+    assignin('base', 'T_ts',              T_ts);
+end
+if exist('T_ref_ts', 'var')
+    assignin('base', 'T_ref_ts',          T_ref_ts);
+end
