@@ -332,14 +332,17 @@ func set_vector_enabled(kind: String, enabled: bool) -> void:
 
 
 func set_overlay_palette(palette_name: String) -> void:
-	var colors := _palette_colors(palette_name)
+	set_overlay_colors(_palette_colors(palette_name))
+
+func set_overlay_colors(colors: Dictionary) -> void:
+	var propellant_color: Color = colors.get("propellant", colors.get("fuel", Color("36a8ff")))
 
 	_set_overlay_color(cg_marker, colors["cg"])
 	_set_overlay_color(cp_marker, colors["cp"])
 	_set_overlay_color(thrust_arrow, colors["thrust"])
 	_set_overlay_color(velocity_arrow, colors["velocity"])
-	_set_overlay_color(fuel, colors["fuel"])
-	_set_overlay_color(oxidizer, colors["oxidizer"])
+	_set_overlay_color(fuel, propellant_color)
+	_set_overlay_color(oxidizer, propellant_color)
 
 	# Keep the RCS exhaust consistent with the overlay palette.
 	var rcs_color: Color = colors["rcs"]
