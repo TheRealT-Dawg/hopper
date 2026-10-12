@@ -1,5 +1,12 @@
 function [damping_ratios] = lateralDampingCalc( ...
-    prop_mass_profile, prop_density, nu, tank_r, baffle_w, Nb, tank_h)
+    prop_mass_profile, prop_density, nu, tank_r, baffle_w, Nb, tank_h, ...
+    baffle_t, slosh_amp)
+
+% baffle_t  - baffle thickness [m] (default 0 -> thin plate, no correction)
+% slosh_amp - free surface slosh amplitude at tank wall, y_s [m]
+%             (default 0.1 * tank_r)
+if nargin < 8, baffle_t  = 0;            end
+if nargin < 9, slosh_amp = 0.1 * tank_r; end
 
 g = 9.81;
 eig_1 = 1.841; % 1st mode of oscillation for cylindrical tanks
@@ -54,6 +61,13 @@ for i = 1:length(prop_heights)
 
     w = 1 ./ (1 + exp((z_baf - h) / delta));
 
+    % Baffle thickness effectiveness (NASA TN D-3716)
+    % mean double amplitude at baffle edge around the ring:
+    % A = (4/pi) * y_s * exp(-1.84 d/a), d = baffle depth below surface
+    d_baf = max(h - z_baf, 0);
+    A_edge = (4 / pi) * slosh_amp * exp(-eig_1 * d_baf / tank_r);
+    eta = baffleThicknessFactor(baffle_t / baffle_w, A_edge / baffle_w);
+
     zeta_energy = 0;
 
     for j = 1:Nb
@@ -65,7 +79,7 @@ for i = 1:length(prop_heights)
         weight = phi_sq / (1 + phi_sq);  
 
         % dissipation as FRACTION of modal energy
-        dE_i = w(j) * Cd * sigma^1.2 * weight * E_modal;
+        dE_i = eta(j) * w(j) * Cd * sigma^1.2 * weight * E_modal;
 
         zeta_energy = zeta_energy + dE_i;
 
